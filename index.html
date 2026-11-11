@@ -66,6 +66,9 @@ main{flex:1;display:flex;min-height:0}
 .north{position:absolute;right:14px;top:12px;z-index:4;pointer-events:none}
 .scalebar{position:absolute;left:14px;bottom:14px;z-index:4;pointer-events:none;font:500 11px var(--mono);color:var(--ink)}
 .scalebar .bar{height:7px;border:2px solid var(--ink);border-top:0;margin-bottom:3px}
+#stage.sat{background:#2b3034}
+.attrib{position:absolute;right:6px;bottom:4px;z-index:4;font-size:10.5px;color:#fff;text-shadow:0 0 3px #000;pointer-events:none}
+#stage.sat .scalebar{background:rgba(255,255,255,.85);padding:5px 7px 3px;border-radius:5px}
 .empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;z-index:3;pointer-events:none}
 .empty .card{pointer-events:auto;max-width:440px;text-align:center;background:rgba(255,253,248,.92);border:1.5px dashed #bdb6a6;border-radius:14px;padding:28px 24px}
 .empty h2{margin:6px 0 8px;font-size:19px}
@@ -129,6 +132,7 @@ dl#mMeta dd{margin:0}
 .mact{display:flex;gap:8px;flex-wrap:wrap;margin-top:auto}
 .mact .btn{font-size:13px;padding:7px 10px}
 .btn.danger{color:#b4321a}
+a.btn{text-decoration:none}
 
 .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:10px 16px;border-radius:9px;z-index:80;font-size:14px;max-width:calc(100% - 30px);box-shadow:0 8px 24px rgba(0,0,0,.25)}
 .busy{position:fixed;inset:0;background:rgba(243,241,235,.7);z-index:70;display:flex;align-items:center;justify-content:center}
@@ -170,6 +174,7 @@ dl#mMeta dd{margin:0}
       <div class="menu hidden" id="menu">
         <button data-act="png">Plan image (PNG)<small>Plan with numbered pins and photo legend</small></button>
         <button data-act="html">Interactive report (HTML)<small>Click pins to open photos. Opens in any browser</small></button>
+        <button data-act="kmz">Google Earth file (KMZ)<small>Pins, directions and photos on Google Earth imagery</small></button>
         <hr>
         <button data-act="bg">Add or replace site plan background<small>Drawing, sketch or aerial screenshot</small></button>
         <button data-act="bgremove">Remove background</button>
@@ -185,6 +190,7 @@ dl#mMeta dd{margin:0}
   <main>
     <section id="stage">
       <svg id="plan" xmlns="http://www.w3.org/2000/svg">
+        <g id="tiles"></g>
         <g id="world"><image id="bgimg" preserveAspectRatio="none" style="display:none"/></g>
         <g id="pins"></g>
       </svg>
@@ -194,6 +200,7 @@ dl#mMeta dd{margin:0}
           <button data-mode="pins">Move pins</button>
           <button data-mode="bg" id="bgModeBtn">Align plan</button>
         </div>
+        <div class="seg" style="align-self:flex-start"><button id="satBtn" title="Show satellite imagery behind the pins">Satellite</button></div>
         <div class="seg zoom">
           <button id="zIn" aria-label="Zoom in">＋</button>
           <button id="zOut" aria-label="Zoom out">−</button>
@@ -201,6 +208,7 @@ dl#mMeta dd{margin:0}
         </div>
       </div>
       <svg class="north" width="40" height="52" viewBox="-20 -30 40 52" aria-label="North"><text y="-17" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-weight="600" font-size="12" fill="#1c2228">N</text><circle r="14" fill="#fff" stroke="#1c2228" stroke-width="1.5"/><path d="M0 -11L6 7L0 3L-6 7Z" fill="#1c2228"/></svg>
+      <div class="attrib hidden" id="attrib">Imagery © Esri, Maxar, Earthstar Geographics</div>
       <div class="scalebar hidden" id="scalebar"><div class="bar" id="sbBar"></div><span id="sbTxt"></span></div>
       <div class="banner hidden" id="banner"><span id="bannerTxt"></span><button id="bannerX">Cancel</button></div>
       <div class="bgpanel hidden" id="bgpanel">
@@ -253,6 +261,7 @@ dl#mMeta dd{margin:0}
       </div>
       <div class="mact">
         <button class="btn" id="mLocate">Show on plan</button>
+        <a class="btn" id="mEarth" target="_blank" rel="noopener">Google Earth ↗</a>
         <button class="btn" id="mReplace">Re-place pin</button>
         <button class="btn danger" id="mDelete">Delete</button>
       </div>
@@ -264,7 +273,7 @@ dl#mMeta dd{margin:0}
 (() => {
 const $ = s => document.querySelector(s);
 const svg = $('#plan'), world = $('#world'), bgImg = $('#bgimg'), pinsG = $('#pins');
-const S = { title: 'Site Photo Location Plan', photos: [], origin: null, bg: null };
+const S = { title: 'Site Photo Location Plan', photos: [], origin: null, bg: null, sat: true };
 let view = { k: 4, tx: 300, ty: 300 };
 let mode = 'view', placingId = null, selectedId = null, openId = null, bgSrcShown = null;
 let bgBase = null; // {mpp, rot} when align panel opened
@@ -318,7 +327,7 @@ function idb() {
 }
 async function idbPut(v) { const db = await idb(); return new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, 'draft'); t.oncomplete = res; t.onerror = () => rej(t.error); }); }
 async function idbGet() { const db = await idb(); return new Promise((res, rej) => { const r = db.transaction('kv').objectStore('kv').get('draft'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
-const snapshot = () => ({ v: 1, title: S.title, origin: S.origin, bg: S.bg, photos: S.photos });
+const snapshot = () => ({ v: 1, title: S.title, origin: S.origin, bg: S.bg, sat: S.sat, photos: S.photos });
 let saveT; function save() { clearTimeout(saveT); saveT = setTimeout(() => { idbPut(snapshot()).catch(() => {}); }, 600); }
 
 /* ---------- downloads ---------- */
@@ -341,6 +350,16 @@ async function saveFile(filename, data) {
 function project(lat, lon) {
   const o = S.origin;
   return { x: (lon - o.lon) * Math.cos(o.lat * Math.PI / 180) * 111320, y: -(lat - o.lat) * 110574 };
+}
+// Current pin position as lat/lon (includes pins moved or placed by hand). Null if not geo-referenced.
+function latLonOf(p) {
+  if (!S.origin || p.wx == null) return null;
+  const o = S.origin;
+  return { lat: o.lat - p.wy / 110574, lon: o.lon + p.wx / (111320 * Math.cos(o.lat * Math.PI / 180)) };
+}
+function earthUrl(ll, heading) {
+  const h = heading != null ? Math.round(heading) : 0;
+  return `https://earth.google.com/web/@${ll.lat.toFixed(7)},${ll.lon.toFixed(7)},30a,90d,35y,${h}h,65t,0r`;
 }
 
 /* ---------- image decode ---------- */
@@ -422,7 +441,7 @@ function contentBounds() {
 function fitTo(x, y, W, H, pad) {
   const b = contentBounds();
   if (!b) return { k: 4, tx: x + W / 2, ty: y + H / 2 };
-  const bw = Math.max(b.x1 - b.x0, 12), bh = Math.max(b.y1 - b.y0, 12);
+  const bw = Math.max(b.x1 - b.x0, 40), bh = Math.max(b.y1 - b.y0, 40);
   const k = clampK(Math.min((W - 2 * pad) / bw, (H - 2 * pad) / bh));
   return { k, tx: x + W / 2 - (b.x0 + b.x1) / 2 * k, ty: y + H / 2 - (b.y0 + b.y1) / 2 * k };
 }
@@ -445,6 +464,64 @@ function scaleBar(k, target) {
   return { px: m * k, label: `${lab} (${sub})` };
 }
 
+/* ---------- satellite tiles (Esri World Imagery) ---------- */
+const NS = 'http://www.w3.org/2000/svg', tilesG = $('#tiles'), tileEls = new Map();
+const TILE_URL = (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
+const lon2tx = (lon, z) => (lon + 180) / 360 * 2 ** z;
+const lat2ty = (lat, z) => { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * 2 ** z; };
+const tx2lon = (x, z) => x / 2 ** z * 360 - 180;
+const ty2lat = (y, z) => { const n = Math.PI - 2 * Math.PI * y / 2 ** z; return 180 / Math.PI * Math.atan(Math.sinh(n)); };
+const worldLL = (wx, wy) => { const o = S.origin; return { lat: o.lat - wy / 110574, lon: o.lon + wx / (111320 * Math.cos(o.lat * Math.PI / 180)) }; };
+function tileRect(v, z, tx, ty) {
+  const nw = project(ty2lat(ty, z), tx2lon(tx, z)), se = project(ty2lat(ty + 1, z), tx2lon(tx + 1, z));
+  const x = nw.x * v.k + v.tx, y = nw.y * v.k + v.ty;
+  return { x, y, w: se.x * v.k + v.tx - x, h: se.y * v.k + v.ty - y };
+}
+function tileList(v, x0s, y0s, W, H) { // tiles covering the screen rect, positioned in screen coords
+  if (!S.sat || !S.origin) return [];
+  const want = Math.round(Math.log2(156543.03 * Math.cos(S.origin.lat * Math.PI / 180) * v.k));
+  const z = Math.max(2, Math.min(19, want)), n = 2 ** z;
+  const a = worldLL((x0s - v.tx) / v.k, (y0s - v.ty) / v.k), b = worldLL((x0s + W - v.tx) / v.k, (y0s + H - v.ty) / v.k);
+  const tx0 = Math.floor(lon2tx(a.lon, z)), tx1 = Math.floor(lon2tx(b.lon, z));
+  const ty0 = Math.max(0, Math.floor(lat2ty(a.lat, z))), ty1 = Math.min(n - 1, Math.floor(lat2ty(b.lat, z)));
+  if ((tx1 - tx0 + 1) * (ty1 - ty0 + 1) > 400) return [];
+  const out = [];
+  for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
+    const xx = ((tx % n) + n) % n;
+    out.push({ key: `${z}/${xx}/${ty}`, z, tx, ty, url: TILE_URL(z, xx, ty), ...tileRect(v, z, tx, ty) });
+  }
+  return out;
+}
+function placeTile(el, r) { el.setAttribute('x', r.x - 0.3); el.setAttribute('y', r.y - 0.3); el.setAttribute('width', r.w + 0.6); el.setAttribute('height', r.h + 0.6); }
+function renderTiles() {
+  const r = svg.getBoundingClientRect();
+  const list = tileList(view, 0, 0, r.width, r.height), keep = new Set(list.map(t => t.key));
+  // keep older tiles (other zoom levels) underneath until the new ones have loaded, to avoid flashing
+  const allLoaded = list.every(t => tileEls.get(t.key) && tileEls.get(t.key)._ok);
+  for (const [k, el] of tileEls) {
+    if (keep.has(k)) continue;
+    if (allLoaded || tileEls.size > 500 || !S.sat) { el.remove(); tileEls.delete(k); }
+    else placeTile(el, tileRect(view, el._z, el._tx, el._ty));
+  }
+  for (const t of list) {
+    let el = tileEls.get(t.key);
+    if (!el) {
+      el = document.createElementNS(NS, 'image'); el._z = t.z; el._tx = t.tx; el._ty = t.ty;
+      el.setAttribute('preserveAspectRatio', 'none');
+      el.addEventListener('load', () => { el._ok = true; clearTimeout(renderTiles._t); renderTiles._t = setTimeout(renderTiles, 60); });
+      el.addEventListener('error', () => { el._ok = true; });
+      el.setAttribute('href', t.url); tilesG.appendChild(el); tileEls.set(t.key, el);
+    }
+    placeTile(el, t);
+  }
+  const on = S.sat && !!S.origin;
+  $('#stage').classList.toggle('sat', on);
+  $('#attrib').classList.toggle('hidden', !on);
+  $('#satBtn').classList.toggle('on', S.sat);
+  $('#satBtn').disabled = !S.origin;
+}
+$('#satBtn').onclick = () => { S.sat = !S.sat; renderPlan(); save(); };
+
 /* ---------- drawing ---------- */
 function pinSVG(p, n, sx, sy, sel, s = 1) {
   const r = 40, a = Math.PI / 6;
@@ -459,6 +536,7 @@ function pinSVG(p, n, sx, sy, sel, s = 1) {
 function bgTransform(b) { return `translate(${b.cx} ${b.cy}) rotate(${b.rot}) scale(${b.mpp})`; }
 
 function renderPlan() {
+  renderTiles();
   world.setAttribute('transform', `translate(${view.tx} ${view.ty}) scale(${view.k})`);
   if (S.bg) {
     if (bgSrcShown !== S.bg.src) { bgImg.setAttribute('href', S.bg.src); bgSrcShown = S.bg.src; }
@@ -500,7 +578,7 @@ function renderChrome() {
   if (placingId) { const p = byId(placingId); $('#bannerTxt').textContent = `Tap the plan where photo ${numOf(p)} was taken`; }
   document.querySelectorAll('#menu [data-act]').forEach(b => {
     const a = b.dataset.act;
-    b.disabled = (['png', 'html', 'save'].includes(a) && !has) || (a === 'bgremove' && !S.bg) || (a === 'new' && !has && !S.bg);
+    b.disabled = (['png', 'html', 'save'].includes(a) && !has) || (a === 'kmz' && !S.photos.some(latLonOf)) || (a === 'bgremove' && !S.bg) || (a === 'new' && !has && !S.bg);
   });
 }
 function render() { renderPlan(); renderList(); renderChrome(); if (openId) fillModal(); }
@@ -617,6 +695,9 @@ function fillModal() {
   if (document.activeElement !== $('#mHead')) $('#mHead').value = p.heading != null ? Math.round(p.heading) : 0;
   $('#mHeadClear').classList.toggle('hidden', p.heading == null);
   $('#mLocate').disabled = p.wx == null;
+  const ll = latLonOf(p);
+  $('#mEarth').classList.toggle('hidden', !ll);
+  if (ll) $('#mEarth').href = earthUrl(ll, p.heading);
   $('#mReplace').textContent = p.wx == null ? 'Place on plan' : 'Re-place pin';
   $('#mPrev').style.visibility = i > 0 ? 'visible' : 'hidden';
   $('#mNext').style.visibility = i < S.photos.length - 1 ? 'visible' : 'hidden';
@@ -696,6 +777,21 @@ async function exportPNG() {
     c.width = W; c.height = H;
     ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
     const v = fitTo(0, top, planW, planH, pad);
+    const tl = tileList(v, 0, top, planW, planH);
+    if (tl.length) {
+      busy('Loading satellite imagery…');
+      const imgs = await Promise.all(tl.map(t => new Promise(res => {
+        const im = new Image(); im.crossOrigin = 'anonymous';
+        const to = setTimeout(() => res(null), 15000);
+        im.onload = () => { clearTimeout(to); res(im); }; im.onerror = () => { clearTimeout(to); res(null); }; im.src = t.url;
+      })));
+      ctx.save(); ctx.beginPath(); ctx.rect(0, top, planW, planH); ctx.clip();
+      tl.forEach((t, i) => { if (imgs[i]) ctx.drawImage(imgs[i], t.x - 0.3, t.y - 0.3, t.w + 0.6, t.h + 0.6); });
+      ctx.restore();
+      ctx.fillStyle = '#fff'; ctx.font = '400 18px Helvetica, Arial, sans-serif'; ctx.textAlign = 'right'; ctx.shadowColor = '#000'; ctx.shadowBlur = 4;
+      ctx.fillText('Imagery © Esri, Maxar, Earthstar Geographics', planW - 14, H - 12); ctx.shadowBlur = 0; ctx.textAlign = 'left';
+      busy('Drawing plan…');
+    }
     if (S.bg) {
       const bi = await loadImg(S.bg.src);
       ctx.save(); ctx.translate(v.tx, v.ty); ctx.scale(v.k, v.k); ctx.translate(S.bg.cx, S.bg.cy); ctx.rotate(S.bg.rot * Math.PI / 180); ctx.scale(S.bg.mpp, S.bg.mpp);
@@ -732,6 +828,7 @@ async function exportPNG() {
     const sb = scaleBar(v.k, 260);
     if (sb && placed().length) {
       const x0 = 50, y0 = H - 60;
+      ctx.fillStyle = 'rgba(255,255,255,.88)'; ctx.fillRect(x0 - 16, y0 - 32, Math.max(sb.px, 230) + 32, 78);
       ctx.strokeStyle = '#1c2228'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(x0, y0 - 16); ctx.lineTo(x0, y0); ctx.lineTo(x0 + sb.px, y0); ctx.lineTo(x0 + sb.px, y0 - 16); ctx.stroke();
       ctx.fillStyle = '#1c2228'; ctx.font = `500 22px ${mono}`; ctx.textAlign = 'left'; ctx.fillText(sb.label, x0, y0 + 32);
     }
@@ -759,11 +856,12 @@ async function exportPNG() {
 
 function buildPlanSVG(W, H) {
   const v = fitTo(0, 0, W, H, 70);
-  let bg = '';
-  if (S.bg) bg = `<g transform="translate(${v.tx} ${v.ty}) scale(${v.k})"><image href="${S.bg.src}" x="${-S.bg.w / 2}" y="${-S.bg.h / 2}" width="${S.bg.w}" height="${S.bg.h}" preserveAspectRatio="none" opacity="${S.bg.opacity}" transform="${bgTransform(S.bg)}"/></g>`;
+  let bg = tileList(v, 0, 0, W, H).map(t => `<image href="${t.url}" x="${(t.x - .3).toFixed(1)}" y="${(t.y - .3).toFixed(1)}" width="${(t.w + .6).toFixed(1)}" height="${(t.h + .6).toFixed(1)}" preserveAspectRatio="none"/>`).join('');
+  if (bg) bg += `<text x="${W - 8}" y="${H - 8}" text-anchor="end" font-size="10" fill="#fff" font-family="Arial" style="paint-order:stroke" stroke="rgba(0,0,0,.6)" stroke-width="2">Imagery © Esri, Maxar, Earthstar Geographics</text>`;
+  if (S.bg) bg += `<g transform="translate(${v.tx} ${v.ty}) scale(${v.k})"><image href="${S.bg.src}" x="${-S.bg.w / 2}" y="${-S.bg.h / 2}" width="${S.bg.w}" height="${S.bg.h}" preserveAspectRatio="none" opacity="${S.bg.opacity}" transform="${bgTransform(S.bg)}"/></g>`;
   const pins = placed().map(p => pinSVG(p, numOf(p), p.wx * v.k + v.tx, p.wy * v.k + v.ty, false)).join('');
   const sb = scaleBar(v.k, 120);
-  const sbar = sb ? `<g transform="translate(20 ${H - 34})"><path d="M0 -8V0H${sb.px.toFixed(1)}V-8" fill="none" stroke="#1c2228" stroke-width="2"/><text y="16" font-size="11" font-family="IBM Plex Mono,Menlo,monospace" fill="#1c2228">${esc(sb.label)}</text></g>` : '';
+  const sbar = sb ? `<g transform="translate(20 ${H - 34})"><rect x="-8" y="-16" width="${Math.max(sb.px, 120) + 16}" height="40" rx="4" fill="#fff" opacity=".85"/><path d="M0 -8V0H${sb.px.toFixed(1)}V-8" fill="none" stroke="#1c2228" stroke-width="2"/><text y="16" font-size="11" font-family="IBM Plex Mono,Menlo,monospace" fill="#1c2228">${esc(sb.label)}</text></g>` : '';
   const north = `<g transform="translate(${W - 34} 44)"><text y="-19" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-weight="600" font-size="12" fill="#1c2228">N</text><circle r="14" fill="#fff" stroke="#1c2228" stroke-width="1.5"/><path d="M0 -11L6 7L0 3L-6 7Z" fill="#1c2228"/></g>`;
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" id="plan">${bg}${pins}${north}${sbar}</svg>`;
 }
@@ -771,7 +869,7 @@ function buildReport() {
   const W = 1000, b = contentBounds();
   const aspect = b ? Math.max(12, b.y1 - b.y0) / Math.max(12, b.x1 - b.x0) : 0.7;
   const H = Math.round(Math.min(1300, Math.max(480, (W - 140) * aspect + 140)));
-  const data = S.photos.map((p, i) => ({ id: p.id, n: i + 1, src: p.src, cap: captionOf(p), meta: metaLine(p), placed: p.wx != null }));
+  const data = S.photos.map((p, i) => ({ id: p.id, n: i + 1, src: p.src, cap: captionOf(p), meta: metaLine(p), placed: p.wx != null, earth: latLonOf(p) ? earthUrl(latLonOf(p), p.heading) : '' }));
   const json = JSON.stringify(data).replace(/</g, '\\u003c');
   const cards = data.map(d => `<button class="card" data-id="${d.id}"><img src="${d.src}" alt="" loading="lazy"><span class="n${d.placed ? '' : ' off'}">${d.n}</span><b>${esc(d.cap)}</b><small>${esc(d.meta)}${d.placed ? '' : ' · not on plan'}</small></button>`).join('');
   return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(S.title)}</title>
@@ -788,21 +886,88 @@ h2{font-size:14px;letter-spacing:.06em;text-transform:uppercase;margin:26px 0 12
 .card img{width:100%;aspect-ratio:4/3;object-fit:cover;display:block;margin-bottom:10px}.card b,.card small{display:block;padding:0 12px}.card small{color:#6b7178;margin-top:3px;font-size:12px}
 .card .n{position:absolute;left:10px;top:10px;width:28px;height:28px;border-radius:50%;background:#1c2228;color:#fff;font:600 12px Menlo,monospace;display:flex;align-items:center;justify-content:center;border:2px solid #fff}.card .n.off{background:#6b7178}
 #lb{position:fixed;inset:0;background:rgba(18,22,26,.86);display:none;align-items:center;justify-content:center;flex-direction:column;padding:16px;z-index:9}#lb.on{display:flex}
-#lb img{max-width:100%;max-height:78vh;border-radius:6px}#lb .c{color:#fff;text-align:center;margin-top:12px;max-width:800px}#lb .c b{font-size:18px}#lb .c small{display:block;color:#c9c4b8;margin-top:4px}
+#lb img{max-width:100%;max-height:78vh;border-radius:6px}#lb .c{color:#fff;text-align:center;margin-top:12px;max-width:800px}#lb .c b{font-size:18px}#lb .c small{display:block;color:#c9c4b8;margin-top:4px}#lb .c a{display:inline-block;margin-top:8px;color:#ffb199;font-size:14px}
 #lb button{position:absolute;border:0;background:rgba(255,255,255,.9);width:44px;height:44px;border-radius:50%;font-size:22px;cursor:pointer}#lbx{top:14px;right:14px}#lbp{left:14px;top:50%}#lbn{right:14px;top:50%}
 </style></head><body>
 <header><h1>${esc(S.title)}</h1><p>${data.length} photos · ${esc(new Date().toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' }))} · Click a pin or photo to view it</p></header>
 <div class="wrap"><div class="plan">${buildPlanSVG(W, H)}</div><h2>Photo index</h2><div class="grid">${cards}</div></div>
-<div id="lb"><img alt=""><div class="c"><b></b><small></small></div><button id="lbx">✕</button><button id="lbp">‹</button><button id="lbn">›</button></div>
+<div id="lb"><img alt=""><div class="c"><b></b><small></small><a id="lbe" target="_blank" rel="noopener">View in Google Earth ↗</a></div><button id="lbx">✕</button><button id="lbp">‹</button><button id="lbn">›</button></div>
 <script>
 var P=${json},cur=-1,lb=document.getElementById('lb');
-function show(i){if(i<0||i>=P.length)return;cur=i;var d=P[i];lb.querySelector('img').src=d.src;lb.querySelector('b').textContent=d.n+'. '+d.cap;lb.querySelector('small').textContent=d.meta;lb.classList.add('on');document.getElementById('lbp').style.visibility=i?'visible':'hidden';document.getElementById('lbn').style.visibility=i<P.length-1?'visible':'hidden';}
+function show(i){if(i<0||i>=P.length)return;cur=i;var d=P[i];lb.querySelector('img').src=d.src;lb.querySelector('b').textContent=d.n+'. '+d.cap;lb.querySelector('small').textContent=d.meta;var ea=document.getElementById('lbe');ea.style.display=d.earth?'':'none';if(d.earth)ea.href=d.earth;lb.classList.add('on');document.getElementById('lbp').style.visibility=i?'visible':'hidden';document.getElementById('lbn').style.visibility=i<P.length-1?'visible':'hidden';}
 function idx(id){for(var i=0;i<P.length;i++)if(P[i].id===id)return i;return -1;}
 document.addEventListener('click',function(e){var t=e.target.closest('[data-id]');if(t&&!lb.contains(t)){show(idx(t.getAttribute('data-id')));}});
 document.getElementById('lbx').onclick=function(){lb.classList.remove('on')};document.getElementById('lbp').onclick=function(){show(cur-1)};document.getElementById('lbn').onclick=function(){show(cur+1)};
 lb.addEventListener('click',function(e){if(e.target===lb)lb.classList.remove('on')});
 document.addEventListener('keydown',function(e){if(!lb.classList.contains('on'))return;if(e.key==='Escape')lb.classList.remove('on');if(e.key==='ArrowLeft')show(cur-1);if(e.key==='ArrowRight')show(cur+1);});
 <\/script></body></html>`;
+}
+
+/* ---------- Google Earth (KMZ) ---------- */
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c; } return t; })();
+function crc32(b) { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = CRC_T[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function makeZip(files) { // stored (uncompressed) zip; first entry must be doc.kml for KMZ
+  const enc = new TextEncoder(), parts = [], central = []; let off = 0;
+  for (const f of files) {
+    const name = enc.encode(f.name), crc = crc32(f.data), size = f.data.length;
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(8, 0, true);
+    lh.setUint16(10, 0, true); lh.setUint16(12, 33, true); lh.setUint32(14, crc, true); lh.setUint32(18, size, true); lh.setUint32(22, size, true);
+    lh.setUint16(26, name.length, true); lh.setUint16(28, 0, true);
+    parts.push(new Uint8Array(lh.buffer), name, f.data);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(10, 0, true);
+    ch.setUint16(12, 0, true); ch.setUint16(14, 33, true); ch.setUint32(16, crc, true); ch.setUint32(20, size, true); ch.setUint32(24, size, true);
+    ch.setUint16(28, name.length, true); ch.setUint32(42, off, true);
+    central.push(new Uint8Array(ch.buffer), name);
+    off += 30 + name.length + size;
+  }
+  const cd = central.reduce((a, b) => a + b.length, 0), end = new DataView(new ArrayBuffer(22));
+  end.setUint32(0, 0x06054b50, true); end.setUint16(8, files.length, true); end.setUint16(10, files.length, true); end.setUint32(12, cd, true); end.setUint32(16, off, true);
+  return new Blob([...parts, ...central, new Uint8Array(end.buffer)], { type: 'application/vnd.google-earth.kmz' });
+}
+const dataURLBytes = u => { const s = atob(u.split(',')[1]); const b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); return b; };
+function earthIcon(withCone) {
+  const c = document.createElement('canvas'); c.width = c.height = 96; const x = c.getContext('2d'); x.translate(48, 48);
+  if (withCone) {
+    x.beginPath(); x.moveTo(0, 0); x.arc(0, 0, 44, -Math.PI / 2 - Math.PI / 6, -Math.PI / 2 + Math.PI / 6); x.closePath();
+    x.fillStyle = 'rgba(228,87,46,.45)'; x.fill(); x.strokeStyle = '#e4572e'; x.lineWidth = 3; x.stroke();
+    x.beginPath(); x.moveTo(0, -14); x.lineTo(0, -40); x.moveTo(-7, -31); x.lineTo(0, -40); x.lineTo(7, -31);
+    x.strokeStyle = '#fff'; x.lineWidth = 6; x.lineCap = 'round'; x.lineJoin = 'round'; x.stroke();
+    x.strokeStyle = '#e4572e'; x.lineWidth = 3; x.stroke();
+  }
+  x.beginPath(); x.arc(0, 0, 12, 0, Math.PI * 2); x.fillStyle = withCone ? '#1c2228' : '#6b7178'; x.fill(); x.lineWidth = 3.5; x.strokeStyle = '#fff'; x.stroke();
+  return dataURLBytes(c.toDataURL('image/png'));
+}
+function buildKMZ() {
+  const xml = s => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const files = [], marks = [];
+  S.photos.forEach((p, i) => {
+    const ll = latLonOf(p); if (!ll) return;
+    const n = i + 1, img = `files/photo-${n}.jpg`;
+    files.push({ name: img, data: dataURLBytes(p.src) });
+    const h = p.heading != null ? p.heading.toFixed(1) : null;
+    const desc = `<img src="${img}" width="560"/><p style="font-family:Arial,sans-serif;font-size:14px"><b>${n}. ${esc(captionOf(p))}</b><br/><span style="color:#666">${esc(metaLine(p))}</span></p>`;
+    marks.push(`<Placemark><name>${n}</name><description><![CDATA[${desc.replace(/]]>/g, ']]&gt;')}]]></description>
+<LookAt><longitude>${ll.lon.toFixed(8)}</longitude><latitude>${ll.lat.toFixed(8)}</latitude><altitude>0</altitude><heading>${h ?? 0}</heading><tilt>65</tilt><range>70</range><altitudeMode>relativeToGround</altitudeMode></LookAt>
+<Style><IconStyle><scale>1.3</scale>${h != null ? `<heading>${h}</heading>` : ''}<Icon><href>files/${h != null ? 'dir' : 'nodir'}.png</href></Icon><hotSpot x="0.5" y="0.5" xunits="fraction" yunits="fraction"/></IconStyle><LabelStyle><scale>0.9</scale></LabelStyle></Style>
+<Point><coordinates>${ll.lon.toFixed(8)},${ll.lat.toFixed(8)},0</coordinates></Point></Placemark>`);
+  });
+  if (!marks.length) return null;
+  const kml = `<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>${xml(S.title)}</name><open>1</open>
+<description>${xml(`${marks.length} photos · ${new Date().toLocaleDateString()}`)}</description>
+<Folder><name>Photo locations</name><open>1</open>
+${marks.join('\n')}
+</Folder></Document></kml>`;
+  return makeZip([{ name: 'doc.kml', data: new TextEncoder().encode(kml) }, { name: 'files/dir.png', data: earthIcon(true) }, { name: 'files/nodir.png', data: earthIcon(false) }, ...files]);
+}
+async function exportKMZ() {
+  const blob = buildKMZ();
+  if (!blob) { toast('No photos have a GPS location yet, so there is nothing to put on Google Earth.'); return; }
+  const skipped = S.photos.filter(p => !latLonOf(p)).length;
+  await saveFile(slug() + '.kmz', blob);
+  if (skipped) toast(`${skipped} photo${skipped === 1 ? '' : 's'} left out (no location on the map).`, 4500);
 }
 
 /* ---------- menu ---------- */
@@ -814,18 +979,19 @@ $('#menu').addEventListener('click', async e => {
   const a = b.dataset.act;
   if (a === 'png') exportPNG();
   if (a === 'html') saveFile(slug() + '-photo-plan.html', buildReport());
+  if (a === 'kmz') exportKMZ();
   if (a === 'save') saveFile(slug() + '.json', JSON.stringify(snapshot()));
   if (a === 'open') $('#projFile').click();
   if (a === 'bg') $('#bgFile').click();
   if (a === 'bgremove') { S.bg = null; if (mode === 'bg') mode = 'view'; render(); save(); }
-  if (a === 'new') { if (await ask('Clear all photos and start a new plan? Save a project file first if you want to keep this one.', 'Start new')) { S.photos = []; S.origin = null; S.bg = null; S.title = 'Site Photo Location Plan'; $('#title').value = S.title; selectedId = null; mode = 'view'; view = { k: 4, tx: 300, ty: 300 }; render(); save(); } }
+  if (a === 'new') { if (await ask('Clear all photos and start a new plan? Save a project file first if you want to keep this one.', 'Start new')) { S.photos = []; S.origin = null; S.bg = null; S.sat = true; S.title = 'Site Photo Location Plan'; $('#title').value = S.title; selectedId = null; mode = 'view'; view = { k: 4, tx: 300, ty: 300 }; render(); save(); } }
 });
 $('#projFile').onchange = async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
   try { const d = JSON.parse(await f.text()); if (!Array.isArray(d.photos)) throw 0; loadState(d); fitView(); render(); save(); toast(`Opened ${d.photos.length} photos`); }
   catch (_) { toast('That isn’t a photo plan project file.'); }
 };
-function loadState(d) { S.title = d.title || 'Site Photo Location Plan'; S.origin = d.origin || null; S.bg = d.bg || null; S.photos = d.photos || []; $('#title').value = S.title; }
+function loadState(d) { S.title = d.title || 'Site Photo Location Plan'; S.origin = d.origin || null; S.bg = d.bg || null; S.photos = d.photos || []; S.sat = d.sat !== false; $('#title').value = S.title; }
 $('#title').addEventListener('input', e => { S.title = e.target.value; save(); });
 
 /* ---------- file inputs / drop ---------- */

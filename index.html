@@ -480,7 +480,7 @@ function scaleBar(k, target) {
 const NS = 'http://www.w3.org/2000/svg', tilesG = $('#tiles'), tileEls = new Map();
 // Put a key here to give every visitor Google imagery (restrict it to your site's URL in Google Cloud).
 // A key saved in the app's "Google imagery key…" dialog overrides this, for that browser only.
-const GOOGLE_MAPS_API_KEY = '';
+const GOOGLE_MAPS_API_KEY = 'AIzaSyBBJqh4ohelLM4q-CvWbKvomeEWO4Y8p68';
 const ESRI_ATTR = 'Imagery © Esri, Maxar, Earthstar Geographics';
 const G = { key: '', session: '', status: 'none', copyright: '', maxZoom: 22, loads: 0, errors: 0, vpT: null, vpKey: '' };
 const useGoogle = () => !!(G.session && G.status === 'ok');

@@ -68,6 +68,7 @@ main{flex:1;display:flex;min-height:0}
 .scalebar .bar{height:7px;border:2px solid var(--ink);border-top:0;margin-bottom:3px}
 #stage.sat{background:#2b3034}
 .attrib{position:absolute;right:6px;bottom:4px;z-index:4;font-size:10.5px;color:#fff;text-shadow:0 0 3px #000;pointer-events:none}
+.attrib b{font-family:Arial,sans-serif;font-size:13px;margin-right:6px;letter-spacing:-.2px}
 #stage.sat .scalebar{background:rgba(255,255,255,.85);padding:5px 7px 3px;border-radius:5px}
 .empty{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;z-index:3;pointer-events:none}
 .empty .card{pointer-events:auto;max-width:440px;text-align:center;background:rgba(255,253,248,.92);border:1.5px dashed #bdb6a6;border-radius:14px;padding:28px 24px}
@@ -178,6 +179,7 @@ a.btn{text-decoration:none}
         <hr>
         <button data-act="bg">Add or replace site plan background<small>Drawing, sketch or aerial screenshot</small></button>
         <button data-act="bgremove">Remove background</button>
+        <button data-act="gkey">Google imagery key…<small id="gkeyStatus">Use Google satellite imagery</small></button>
         <hr>
         <button data-act="save">Save project file (.json)</button>
         <button data-act="open">Open project file…</button>
@@ -237,6 +239,16 @@ a.btn{text-decoration:none}
       <div class="tip" id="tip">Pins come from each photo's GPS. Direction comes from the compass heading (most iPhones record it, many Android phones don't). If a photo has no location or direction, you can place it or set its direction by hand.</div>
     </aside>
   </main>
+</div>
+
+<div class="dialog hidden" id="gdlg">
+  <div class="box" style="max-width:420px">
+    <h3 style="margin:0 0 6px;font-size:16px">Google satellite imagery</h3>
+    <p style="font-size:13.5px;color:#6b7178;margin:0 0 10px">Paste a Google Maps Platform API key with the <b>Map Tiles API</b> enabled. It's saved only in this browser. Without a key the app uses Esri imagery.</p>
+    <input id="gkeyInput" placeholder="AIza…" autocomplete="off" spellcheck="false" style="width:100%;padding:9px 10px;border:1px solid #dcd7cb;border-radius:8px;font-family:var(--mono);font-size:13px">
+    <p id="gkeyMsg" style="font-size:13px;margin:8px 0 12px;min-height:1.2em"></p>
+    <div class="row"><button class="btn" id="gkeyRemove">Remove key</button><button class="btn" id="gkeyCancel">Close</button><button class="btn primary" id="gkeySave">Save &amp; test</button></div>
+  </div>
 </div>
 
 <div id="modal" class="hidden" role="dialog" aria-modal="true">
@@ -466,7 +478,68 @@ function scaleBar(k, target) {
 
 /* ---------- satellite tiles (Esri World Imagery) ---------- */
 const NS = 'http://www.w3.org/2000/svg', tilesG = $('#tiles'), tileEls = new Map();
-const TILE_URL = (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
+// Put a key here to give every visitor Google imagery (restrict it to your site's URL in Google Cloud).
+// A key saved in the app's "Google imagery key…" dialog overrides this, for that browser only.
+const GOOGLE_MAPS_API_KEY = '';
+const ESRI_ATTR = 'Imagery © Esri, Maxar, Earthstar Geographics';
+const G = { key: '', session: '', status: 'none', copyright: '', maxZoom: 22, loads: 0, errors: 0, vpT: null, vpKey: '' };
+const useGoogle = () => !!(G.session && G.status === 'ok');
+const TILE_URL = (z, x, y) => useGoogle()
+  ? `https://tile.googleapis.com/v1/2dtiles/${z}/${x}/${y}?session=${encodeURIComponent(G.session)}&key=${encodeURIComponent(G.key)}`
+  : `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
+const attribText = () => useGoogle() ? (G.copyright || `Imagery ©${new Date().getFullYear()} Google`) : ESRI_ATTR;
+const lsGet = k => { try { return localStorage.getItem(k) || ''; } catch (_) { return ''; } };
+const lsSet = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (_) {} };
+async function startGoogle(key) {
+  G.key = key || ''; G.session = ''; G.loads = 0; G.errors = 0; G.copyright = ''; G.maxZoom = 22;
+  if (!G.key) { G.status = 'none'; updateGStatus(); renderPlan(); return { ok: false, msg: 'No key set. Using Esri imagery.' }; }
+  G.status = 'starting'; updateGStatus();
+  try {
+    const cached = JSON.parse(lsGet('gSession') || 'null');
+    if (cached && cached.key === G.key && cached.expiry * 1000 > Date.now() + 3600e3) G.session = cached.session;
+    else {
+      const r = await fetch(`https://tile.googleapis.com/v1/createSession?key=${encodeURIComponent(G.key)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mapType: 'satellite', language: 'en-US', region: 'US' }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.session) throw new Error((j.error && j.error.message) || `HTTP ${r.status}`);
+      G.session = j.session;
+      lsSet('gSession', JSON.stringify({ key: G.key, session: j.session, expiry: +j.expiry || (Date.now() / 1000 + 86400) }));
+    }
+    G.status = 'ok'; updateGStatus(); renderPlan();
+    return { ok: true, msg: 'Connected. Google imagery is on.' };
+  } catch (e) {
+    G.status = 'error'; G.session = ''; updateGStatus(); renderPlan();
+    return { ok: false, msg: 'Google rejected the key: ' + e.message };
+  }
+}
+function googleTileFailed() { // too many failed tiles and none loaded: fall back to Esri
+  G.status = 'error'; G.session = ''; lsSet('gSession', ''); updateGStatus(); renderPlan();
+  toast('Google imagery wouldn’t load (check the key’s website restriction). Showing Esri imagery instead.', 6000);
+}
+function updateGStatus() {
+  const el = $('#gkeyStatus'); if (!el) return;
+  el.textContent = { none: 'Not set. Using Esri imagery', starting: 'Connecting…', ok: 'Google imagery on', error: 'Key not working. Using Esri imagery' }[G.status];
+}
+function fetchViewport(z, a, b) { // copyright string + max zoom for the current view (required attribution)
+  if (!useGoogle()) return;
+  const k = `${z}|${a.lat.toFixed(4)}|${a.lon.toFixed(4)}|${b.lat.toFixed(4)}|${b.lon.toFixed(4)}`;
+  if (k === G.vpKey) return;
+  clearTimeout(G.vpT);
+  G.vpT = setTimeout(async () => {
+    G.vpKey = k;
+    try {
+      const u = `https://tile.googleapis.com/tile/v1/viewport?session=${encodeURIComponent(G.session)}&key=${encodeURIComponent(G.key)}&zoom=${z}&north=${a.lat}&south=${b.lat}&east=${b.lon}&west=${a.lon}`;
+      const j = await (await fetch(u)).json();
+      if (j.copyright != null) G.copyright = j.copyright;
+      const cLat = (a.lat + b.lat) / 2, cLon = (a.lon + b.lon) / 2;
+      const zs = (j.maxZoomRects || []).filter(r => cLat <= r.north && cLat >= r.south && cLon <= r.east && cLon >= r.west).map(r => r.maxZoom);
+      const mz = zs.length ? Math.max(...zs) : 22;
+      const changed = mz !== G.maxZoom; G.maxZoom = mz;
+      $('#attrib').innerHTML = '<b>Google</b>' + esc(attribText());
+      if (changed) renderPlan();
+    } catch (_) {}
+  }, 350);
+}
 const lon2tx = (lon, z) => (lon + 180) / 360 * 2 ** z;
 const lat2ty = (lat, z) => { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * 2 ** z; };
 const tx2lon = (x, z) => x / 2 ** z * 360 - 180;
@@ -477,25 +550,26 @@ function tileRect(v, z, tx, ty) {
   const x = nw.x * v.k + v.tx, y = nw.y * v.k + v.ty;
   return { x, y, w: se.x * v.k + v.tx - x, h: se.y * v.k + v.ty - y };
 }
-function tileList(v, x0s, y0s, W, H) { // tiles covering the screen rect, positioned in screen coords
+function tileList(v, x0s, y0s, W, H, live) { // tiles covering the screen rect, positioned in screen coords
   if (!S.sat || !S.origin) return [];
   const want = Math.round(Math.log2(156543.03 * Math.cos(S.origin.lat * Math.PI / 180) * v.k));
-  const z = Math.max(2, Math.min(19, want)), n = 2 ** z;
+  const z = Math.max(2, Math.min(useGoogle() ? Math.min(22, G.maxZoom) : 19, want)), n = 2 ** z;
   const a = worldLL((x0s - v.tx) / v.k, (y0s - v.ty) / v.k), b = worldLL((x0s + W - v.tx) / v.k, (y0s + H - v.ty) / v.k);
   const tx0 = Math.floor(lon2tx(a.lon, z)), tx1 = Math.floor(lon2tx(b.lon, z));
   const ty0 = Math.max(0, Math.floor(lat2ty(a.lat, z))), ty1 = Math.min(n - 1, Math.floor(lat2ty(b.lat, z)));
   if ((tx1 - tx0 + 1) * (ty1 - ty0 + 1) > 400) return [];
+  if (live) fetchViewport(z, a, b);
   const out = [];
   for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
     const xx = ((tx % n) + n) % n;
-    out.push({ key: `${z}/${xx}/${ty}`, z, tx, ty, url: TILE_URL(z, xx, ty), ...tileRect(v, z, tx, ty) });
+    out.push({ key: `${useGoogle() ? 'g' : 'e'}${z}/${xx}/${ty}`, z, tx, ty, url: TILE_URL(z, xx, ty), ...tileRect(v, z, tx, ty) });
   }
   return out;
 }
 function placeTile(el, r) { el.setAttribute('x', r.x - 0.3); el.setAttribute('y', r.y - 0.3); el.setAttribute('width', r.w + 0.6); el.setAttribute('height', r.h + 0.6); }
 function renderTiles() {
   const r = svg.getBoundingClientRect();
-  const list = tileList(view, 0, 0, r.width, r.height), keep = new Set(list.map(t => t.key));
+  const list = tileList(view, 0, 0, r.width, r.height, true), keep = new Set(list.map(t => t.key));
   // keep older tiles (other zoom levels) underneath until the new ones have loaded, to avoid flashing
   const allLoaded = list.every(t => tileEls.get(t.key) && tileEls.get(t.key)._ok);
   for (const [k, el] of tileEls) {
@@ -508,8 +582,9 @@ function renderTiles() {
     if (!el) {
       el = document.createElementNS(NS, 'image'); el._z = t.z; el._tx = t.tx; el._ty = t.ty;
       el.setAttribute('preserveAspectRatio', 'none');
-      el.addEventListener('load', () => { el._ok = true; clearTimeout(renderTiles._t); renderTiles._t = setTimeout(renderTiles, 60); });
-      el.addEventListener('error', () => { el._ok = true; });
+      const g = t.key[0] === 'g';
+      el.addEventListener('load', () => { el._ok = true; if (g) G.loads++; clearTimeout(renderTiles._t); renderTiles._t = setTimeout(renderTiles, 60); });
+      el.addEventListener('error', () => { el._ok = true; if (g && useGoogle() && ++G.errors >= 6 && !G.loads) googleTileFailed(); });
       el.setAttribute('href', t.url); tilesG.appendChild(el); tileEls.set(t.key, el);
     }
     placeTile(el, t);
@@ -517,6 +592,8 @@ function renderTiles() {
   const on = S.sat && !!S.origin;
   $('#stage').classList.toggle('sat', on);
   $('#attrib').classList.toggle('hidden', !on);
+  if (on && !useGoogle()) $('#attrib').textContent = ESRI_ATTR;
+  else if (on && useGoogle() && !$('#attrib').querySelector('b')) $('#attrib').innerHTML = '<b>Google</b>' + esc(attribText());
   $('#satBtn').classList.toggle('on', S.sat);
   $('#satBtn').disabled = !S.origin;
 }
@@ -759,6 +836,16 @@ function wrapLines(ctx, text, maxW) {
   for (const w of words) { const t = cur ? cur + ' ' + w : w; if (ctx.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; } else cur = t; }
   if (cur) lines.push(cur); return lines;
 }
+async function drawTiles(ctx, tl) { // returns true if any imagery was drawn
+  const imgs = await Promise.all(tl.map(t => new Promise(res => {
+    const im = new Image(); im.crossOrigin = 'anonymous';
+    const to = setTimeout(() => res(null), 15000);
+    im.onload = () => { clearTimeout(to); res(im); }; im.onerror = () => { clearTimeout(to); res(null); }; im.src = t.url;
+  })));
+  tl.forEach((t, i) => { if (imgs[i]) ctx.drawImage(imgs[i], t.x - 0.3, t.y - 0.3, t.w + 0.6, t.h + 0.6); });
+  return imgs.some(Boolean);
+}
+const attribLine = () => useGoogle() ? 'Google · ' + attribText() : ESRI_ATTR;
 async function exportPNG() {
   busy('Drawing plan…');
   try {
@@ -780,16 +867,11 @@ async function exportPNG() {
     const tl = tileList(v, 0, top, planW, planH);
     if (tl.length) {
       busy('Loading satellite imagery…');
-      const imgs = await Promise.all(tl.map(t => new Promise(res => {
-        const im = new Image(); im.crossOrigin = 'anonymous';
-        const to = setTimeout(() => res(null), 15000);
-        im.onload = () => { clearTimeout(to); res(im); }; im.onerror = () => { clearTimeout(to); res(null); }; im.src = t.url;
-      })));
       ctx.save(); ctx.beginPath(); ctx.rect(0, top, planW, planH); ctx.clip();
-      tl.forEach((t, i) => { if (imgs[i]) ctx.drawImage(imgs[i], t.x - 0.3, t.y - 0.3, t.w + 0.6, t.h + 0.6); });
+      await drawTiles(ctx, tl);
       ctx.restore();
       ctx.fillStyle = '#fff'; ctx.font = '400 18px Helvetica, Arial, sans-serif'; ctx.textAlign = 'right'; ctx.shadowColor = '#000'; ctx.shadowBlur = 4;
-      ctx.fillText('Imagery © Esri, Maxar, Earthstar Geographics', planW - 14, H - 12); ctx.shadowBlur = 0; ctx.textAlign = 'left';
+      ctx.fillText(attribLine(), planW - 14, H - 12); ctx.shadowBlur = 0; ctx.textAlign = 'left';
       busy('Drawing plan…');
     }
     if (S.bg) {
@@ -854,10 +936,16 @@ async function exportPNG() {
   } catch (e) { busy(null); toast('Couldn’t draw the plan image.'); console.error(e); }
 }
 
-function buildPlanSVG(W, H) {
+async function imageryDataURL(v, W, H) {
+  const v2 = { k: v.k * 2, tx: v.tx * 2, ty: v.ty * 2 }, tl = tileList(v2, 0, 0, W * 2, H * 2);
+  if (!tl.length) return null;
+  const c = document.createElement('canvas'); c.width = W * 2; c.height = H * 2;
+  try { if (!(await drawTiles(c.getContext('2d'), tl))) return null; return c.toDataURL('image/jpeg', 0.82); } catch (_) { return null; }
+}
+async function buildPlanSVG(W, H) {
   const v = fitTo(0, 0, W, H, 70);
-  let bg = tileList(v, 0, 0, W, H).map(t => `<image href="${t.url}" x="${(t.x - .3).toFixed(1)}" y="${(t.y - .3).toFixed(1)}" width="${(t.w + .6).toFixed(1)}" height="${(t.h + .6).toFixed(1)}" preserveAspectRatio="none"/>`).join('');
-  if (bg) bg += `<text x="${W - 8}" y="${H - 8}" text-anchor="end" font-size="10" fill="#fff" font-family="Arial" style="paint-order:stroke" stroke="rgba(0,0,0,.6)" stroke-width="2">Imagery © Esri, Maxar, Earthstar Geographics</text>`;
+  const im = await imageryDataURL(v, W, H);
+  let bg = im ? `<image href="${im}" x="0" y="0" width="${W}" height="${H}" preserveAspectRatio="none"/><text x="${W - 8}" y="${H - 8}" text-anchor="end" font-size="10" fill="#fff" font-family="Arial" style="paint-order:stroke" stroke="rgba(0,0,0,.6)" stroke-width="2">${esc(attribLine())}</text>` : '';
   if (S.bg) bg += `<g transform="translate(${v.tx} ${v.ty}) scale(${v.k})"><image href="${S.bg.src}" x="${-S.bg.w / 2}" y="${-S.bg.h / 2}" width="${S.bg.w}" height="${S.bg.h}" preserveAspectRatio="none" opacity="${S.bg.opacity}" transform="${bgTransform(S.bg)}"/></g>`;
   const pins = placed().map(p => pinSVG(p, numOf(p), p.wx * v.k + v.tx, p.wy * v.k + v.ty, false)).join('');
   const sb = scaleBar(v.k, 120);
@@ -865,7 +953,7 @@ function buildPlanSVG(W, H) {
   const north = `<g transform="translate(${W - 34} 44)"><text y="-19" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-weight="600" font-size="12" fill="#1c2228">N</text><circle r="14" fill="#fff" stroke="#1c2228" stroke-width="1.5"/><path d="M0 -11L6 7L0 3L-6 7Z" fill="#1c2228"/></g>`;
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" id="plan">${bg}${pins}${north}${sbar}</svg>`;
 }
-function buildReport() {
+async function buildReport() {
   const W = 1000, b = contentBounds();
   const aspect = b ? Math.max(12, b.y1 - b.y0) / Math.max(12, b.x1 - b.x0) : 0.7;
   const H = Math.round(Math.min(1300, Math.max(480, (W - 140) * aspect + 140)));
@@ -890,7 +978,7 @@ h2{font-size:14px;letter-spacing:.06em;text-transform:uppercase;margin:26px 0 12
 #lb button{position:absolute;border:0;background:rgba(255,255,255,.9);width:44px;height:44px;border-radius:50%;font-size:22px;cursor:pointer}#lbx{top:14px;right:14px}#lbp{left:14px;top:50%}#lbn{right:14px;top:50%}
 </style></head><body>
 <header><h1>${esc(S.title)}</h1><p>${data.length} photos · ${esc(new Date().toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' }))} · Click a pin or photo to view it</p></header>
-<div class="wrap"><div class="plan">${buildPlanSVG(W, H)}</div><h2>Photo index</h2><div class="grid">${cards}</div></div>
+<div class="wrap"><div class="plan">${await buildPlanSVG(W, H)}</div><h2>Photo index</h2><div class="grid">${cards}</div></div>
 <div id="lb"><img alt=""><div class="c"><b></b><small></small><a id="lbe" target="_blank" rel="noopener">View in Google Earth ↗</a></div><button id="lbx">✕</button><button id="lbp">‹</button><button id="lbn">›</button></div>
 <script>
 var P=${json},cur=-1,lb=document.getElementById('lb');
@@ -978,7 +1066,8 @@ $('#menu').addEventListener('click', async e => {
   $('#menu').classList.add('hidden');
   const a = b.dataset.act;
   if (a === 'png') exportPNG();
-  if (a === 'html') saveFile(slug() + '-photo-plan.html', buildReport());
+  if (a === 'html') { busy('Building report…'); const h = await buildReport(); busy(null); saveFile(slug() + '-photo-plan.html', h); }
+  if (a === 'gkey') openGDialog();
   if (a === 'kmz') exportKMZ();
   if (a === 'save') saveFile(slug() + '.json', JSON.stringify(snapshot()));
   if (a === 'open') $('#projFile').click();
@@ -1023,7 +1112,30 @@ $('#demoBtn').onclick = () => {
   toast('Demo loaded. Tap a pin to open its photo.');
 };
 
+/* ---------- Google key dialog ---------- */
+function openGDialog() {
+  $('#gkeyInput').value = lsGet('gmapsKey'); $('#gkeyMsg').textContent = '';
+  $('#gkeyMsg').style.color = '';
+  if (!lsGet('gmapsKey') && GOOGLE_MAPS_API_KEY) $('#gkeyMsg').textContent = 'This site has a built-in key. A key saved here overrides it in this browser.';
+  $('#gdlg').classList.remove('hidden'); $('#gkeyInput').focus();
+}
+$('#gkeyCancel').onclick = () => $('#gdlg').classList.add('hidden');
+$('#gkeySave').onclick = async () => {
+  const k = $('#gkeyInput').value.trim(); if (!k) return;
+  $('#gkeyMsg').style.color = ''; $('#gkeyMsg').textContent = 'Testing…';
+  lsSet('gSession', '');
+  const r = await startGoogle(k);
+  $('#gkeyMsg').style.color = r.ok ? '#2f7d5b' : '#b4321a'; $('#gkeyMsg').textContent = r.msg;
+  if (r.ok) { lsSet('gmapsKey', k); if (!S.sat) { S.sat = true; renderPlan(); } setTimeout(() => $('#gdlg').classList.add('hidden'), 900); }
+};
+$('#gkeyRemove').onclick = async () => {
+  lsSet('gmapsKey', ''); lsSet('gSession', ''); $('#gkeyInput').value = '';
+  const r = await startGoogle(GOOGLE_MAPS_API_KEY);
+  $('#gkeyMsg').style.color = ''; $('#gkeyMsg').textContent = GOOGLE_MAPS_API_KEY ? 'Removed. Using the site’s built-in key.' : 'Removed. Using Esri imagery.';
+};
+
 /* ---------- boot ---------- */
+startGoogle(lsGet('gmapsKey') || GOOGLE_MAPS_API_KEY);
 render();
 idbGet().then(d => { if (d && Array.isArray(d.photos) && (d.photos.length || d.bg)) { loadState(d); fitView(); render(); } }).catch(() => {});
 })();

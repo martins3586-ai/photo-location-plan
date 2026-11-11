@@ -61,6 +61,9 @@ main{flex:1;display:flex;min-height:0}
 .seg button.on{background:var(--ink);color:#fff}
 .seg button:disabled{opacity:.4;cursor:default}
 .zoom{flex-direction:row;align-self:flex-start}
+.basesel{align-items:center}
+.basesel label{font-size:12px;color:var(--muted);padding:0 2px 0 10px}
+.basesel select{border:0;background:transparent;font-size:13px;font-weight:500;padding:7px 8px 7px 4px;cursor:pointer;outline:none}
 .zoom button{font-size:16px;padding:6px 11px;line-height:1}
 
 .north{position:absolute;right:14px;top:12px;z-index:4;pointer-events:none}
@@ -202,7 +205,7 @@ a.btn{text-decoration:none}
           <button data-mode="pins">Move pins</button>
           <button data-mode="bg" id="bgModeBtn">Align plan</button>
         </div>
-        <div class="seg" style="align-self:flex-start"><button id="satBtn" title="Show satellite imagery behind the pins">Satellite</button></div>
+        <div class="seg basesel" style="align-self:flex-start"><label for="baseSel">Map</label><select id="baseSel" aria-label="Base map"><option value="satellite">Satellite</option><option value="hybrid">Satellite + streets</option><option value="roadmap">Street map</option><option value="none">None</option></select></div>
         <div class="seg zoom">
           <button id="zIn" aria-label="Zoom in">＋</button>
           <button id="zOut" aria-label="Zoom out">−</button>
@@ -285,7 +288,7 @@ a.btn{text-decoration:none}
 (() => {
 const $ = s => document.querySelector(s);
 const svg = $('#plan'), world = $('#world'), bgImg = $('#bgimg'), pinsG = $('#pins');
-const S = { title: 'Site Photo Location Plan', photos: [], origin: null, bg: null, sat: true };
+const S = { title: 'Site Photo Location Plan', photos: [], origin: null, bg: null, base: 'satellite' };
 let view = { k: 4, tx: 300, ty: 300 };
 let mode = 'view', placingId = null, selectedId = null, openId = null, bgSrcShown = null;
 let bgBase = null; // {mpp, rot} when align panel opened
@@ -339,7 +342,7 @@ function idb() {
 }
 async function idbPut(v) { const db = await idb(); return new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, 'draft'); t.oncomplete = res; t.onerror = () => rej(t.error); }); }
 async function idbGet() { const db = await idb(); return new Promise((res, rej) => { const r = db.transaction('kv').objectStore('kv').get('draft'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
-const snapshot = () => ({ v: 1, title: S.title, origin: S.origin, bg: S.bg, sat: S.sat, photos: S.photos });
+const snapshot = () => ({ v: 1, title: S.title, origin: S.origin, bg: S.bg, base: S.base, photos: S.photos });
 let saveT; function save() { clearTimeout(saveT); saveT = setTimeout(() => { idbPut(snapshot()).catch(() => {}); }, 600); }
 
 /* ---------- downloads ---------- */
@@ -481,61 +484,74 @@ const NS = 'http://www.w3.org/2000/svg', tilesG = $('#tiles'), tileEls = new Map
 // Put a key here to give every visitor Google imagery (restrict it to your site's URL in Google Cloud).
 // A key saved in the app's "Google imagery key…" dialog overrides this, for that browser only.
 const GOOGLE_MAPS_API_KEY = 'AIzaSyBBJqh4ohelLM4q-CvWbKvomeEWO4Y8p68';
-const ESRI_ATTR = 'Imagery © Esri, Maxar, Earthstar Geographics';
-const G = { key: '', session: '', status: 'none', copyright: '', maxZoom: 22, loads: 0, errors: 0, vpT: null, vpKey: '' };
-const useGoogle = () => !!(G.session && G.status === 'ok');
-const TILE_URL = (z, x, y) => useGoogle()
-  ? `https://tile.googleapis.com/v1/2dtiles/${z}/${x}/${y}?session=${encodeURIComponent(G.session)}&key=${encodeURIComponent(G.key)}`
-  : `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
-const attribText = () => useGoogle() ? (G.copyright || `Imagery ©${new Date().getFullYear()} Google`) : ESRI_ATTR;
+// Base maps. Google is used when a key works; otherwise the Esri equivalent.
+const ESRI = n => (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/${n}/MapServer/tile/${z}/${y}/${x}`;
+const BASES = {
+  satellite: { g: { mapType: 'satellite' }, esri: [ESRI('World_Imagery')], attr: 'Imagery © Esri, Maxar, Earthstar Geographics' },
+  hybrid: { g: { mapType: 'satellite', layerTypes: ['layerRoadmap'] }, esri: [ESRI('World_Imagery'), ESRI('Reference/World_Transportation'), ESRI('Reference/World_Boundaries_and_Places')], attr: 'Imagery and labels © Esri, Maxar, Earthstar Geographics, HERE, Garmin' },
+  roadmap: { g: { mapType: 'roadmap' }, esri: [ESRI('World_Street_Map')], attr: 'Map © Esri, HERE, Garmin, OpenStreetMap contributors' },
+  none: null
+};
+const G = { key: '', status: 'none', sessions: {}, copyright: {}, maxZoom: {}, loads: 0, errors: 0, vpT: null, vpKey: '' };
+const curBase = () => BASES[S.base] ? S.base : null;
+const useGoogle = () => !!(curBase() && G.status === 'ok' && G.sessions[S.base]);
+const gTile = (z, x, y) => `https://tile.googleapis.com/v1/2dtiles/${z}/${x}/${y}?session=${encodeURIComponent(G.sessions[S.base])}&key=${encodeURIComponent(G.key)}`;
+const attribText = () => useGoogle() ? (G.copyright[S.base] || `©${new Date().getFullYear()} Google`) : (curBase() ? BASES[S.base].attr : '');
 const lsGet = k => { try { return localStorage.getItem(k) || ''; } catch (_) { return ''; } };
 const lsSet = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch (_) {} };
+async function ensureSession(base) {
+  if (G.sessions[base]) return;
+  const cached = JSON.parse(lsGet('gSess_' + base) || 'null');
+  if (cached && cached.key === G.key && cached.expiry * 1000 > Date.now() + 3600e3) { G.sessions[base] = cached.session; return; }
+  const r = await fetch(`https://tile.googleapis.com/v1/createSession?key=${encodeURIComponent(G.key)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ language: 'en-US', region: 'US', ...BASES[base].g }) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || !j.session) throw new Error((j.error && j.error.message) || `HTTP ${r.status}`);
+  G.sessions[base] = j.session;
+  lsSet('gSess_' + base, JSON.stringify({ key: G.key, session: j.session, expiry: +j.expiry || (Date.now() / 1000 + 86400) }));
+}
 async function startGoogle(key) {
-  G.key = key || ''; G.session = ''; G.loads = 0; G.errors = 0; G.copyright = ''; G.maxZoom = 22;
-  if (!G.key) { G.status = 'none'; updateGStatus(); renderPlan(); return { ok: false, msg: 'No key set. Using Esri imagery.' }; }
+  G.key = key || ''; G.sessions = {}; G.copyright = {}; G.maxZoom = {}; G.loads = 0; G.errors = 0; G.vpKey = '';
+  if (!G.key) { G.status = 'none'; updateGStatus(); renderPlan(); return { ok: false, msg: 'No key set. Using Esri maps.' }; }
   G.status = 'starting'; updateGStatus();
   try {
-    const cached = JSON.parse(lsGet('gSession') || 'null');
-    if (cached && cached.key === G.key && cached.expiry * 1000 > Date.now() + 3600e3) G.session = cached.session;
-    else {
-      const r = await fetch(`https://tile.googleapis.com/v1/createSession?key=${encodeURIComponent(G.key)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mapType: 'satellite', language: 'en-US', region: 'US' }) });
-      const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j.session) throw new Error((j.error && j.error.message) || `HTTP ${r.status}`);
-      G.session = j.session;
-      lsSet('gSession', JSON.stringify({ key: G.key, session: j.session, expiry: +j.expiry || (Date.now() / 1000 + 86400) }));
-    }
+    await ensureSession(curBase() || 'satellite');
     G.status = 'ok'; updateGStatus(); renderPlan();
-    return { ok: true, msg: 'Connected. Google imagery is on.' };
+    return { ok: true, msg: 'Connected. Google maps are on.' };
   } catch (e) {
-    G.status = 'error'; G.session = ''; updateGStatus(); renderPlan();
+    G.status = 'error'; G.sessions = {}; updateGStatus(); renderPlan();
     return { ok: false, msg: 'Google rejected the key: ' + e.message };
   }
 }
 function googleTileFailed() { // too many failed tiles and none loaded: fall back to Esri
-  G.status = 'error'; G.session = ''; lsSet('gSession', ''); updateGStatus(); renderPlan();
-  toast('Google imagery wouldn’t load (check the key’s website restriction). Showing Esri imagery instead.', 6000);
+  G.status = 'error'; G.sessions = {}; Object.keys(BASES).forEach(b => lsSet('gSess_' + b, '')); updateGStatus(); renderPlan();
+  toast('Google maps wouldn’t load (check the key’s website restriction). Showing Esri maps instead.', 6000);
 }
 function updateGStatus() {
   const el = $('#gkeyStatus'); if (!el) return;
-  el.textContent = { none: 'Not set. Using Esri imagery', starting: 'Connecting…', ok: 'Google imagery on', error: 'Key not working. Using Esri imagery' }[G.status];
+  el.textContent = { none: 'Not set. Using Esri maps', starting: 'Connecting…', ok: 'Google maps on', error: 'Key not working. Using Esri maps' }[G.status];
+}
+function setBase(b) {
+  S.base = BASES[b] !== undefined ? b : 'satellite';
+  $('#baseSel').value = S.base;
+  G.vpKey = ''; renderPlan(); save();
 }
 function fetchViewport(z, a, b) { // copyright string + max zoom for the current view (required attribution)
   if (!useGoogle()) return;
-  const k = `${z}|${a.lat.toFixed(4)}|${a.lon.toFixed(4)}|${b.lat.toFixed(4)}|${b.lon.toFixed(4)}`;
+  const base = S.base, k = `${base}|${z}|${a.lat.toFixed(4)}|${a.lon.toFixed(4)}|${b.lat.toFixed(4)}|${b.lon.toFixed(4)}`;
   if (k === G.vpKey) return;
   clearTimeout(G.vpT);
   G.vpT = setTimeout(async () => {
     G.vpKey = k;
     try {
-      const u = `https://tile.googleapis.com/tile/v1/viewport?session=${encodeURIComponent(G.session)}&key=${encodeURIComponent(G.key)}&zoom=${z}&north=${a.lat}&south=${b.lat}&east=${b.lon}&west=${a.lon}`;
+      const u = `https://tile.googleapis.com/tile/v1/viewport?session=${encodeURIComponent(G.sessions[base])}&key=${encodeURIComponent(G.key)}&zoom=${z}&north=${a.lat}&south=${b.lat}&east=${b.lon}&west=${a.lon}`;
       const j = await (await fetch(u)).json();
-      if (j.copyright != null) G.copyright = j.copyright;
+      if (j.copyright != null) G.copyright[base] = j.copyright;
       const cLat = (a.lat + b.lat) / 2, cLon = (a.lon + b.lon) / 2;
       const zs = (j.maxZoomRects || []).filter(r => cLat <= r.north && cLat >= r.south && cLon <= r.east && cLon >= r.west).map(r => r.maxZoom);
       const mz = zs.length ? Math.max(...zs) : 22;
-      const changed = mz !== G.maxZoom; G.maxZoom = mz;
-      $('#attrib').innerHTML = '<b>Google</b>' + esc(attribText());
+      const changed = mz !== G.maxZoom[base]; G.maxZoom[base] = mz;
+      renderAttrib();
       if (changed) renderPlan();
     } catch (_) {}
   }, 350);
@@ -550,31 +566,45 @@ function tileRect(v, z, tx, ty) {
   const x = nw.x * v.k + v.tx, y = nw.y * v.k + v.ty;
   return { x, y, w: se.x * v.k + v.tx - x, h: se.y * v.k + v.ty - y };
 }
-function tileList(v, x0s, y0s, W, H, live) { // tiles covering the screen rect, positioned in screen coords
-  if (!S.sat || !S.origin) return [];
+function tileList(v, x0s, y0s, W, H, live) { // tiles covering the screen rect, in draw order (layer by layer), screen coords
+  if (!curBase() || !S.origin) return [];
+  const g = useGoogle(), layers = g ? [gTile] : BASES[S.base].esri;
   const want = Math.round(Math.log2(156543.03 * Math.cos(S.origin.lat * Math.PI / 180) * v.k));
-  const z = Math.max(2, Math.min(useGoogle() ? Math.min(22, G.maxZoom) : 19, want)), n = 2 ** z;
+  const z = Math.max(2, Math.min(g ? Math.min(22, G.maxZoom[S.base] || 22) : 19, want)), n = 2 ** z;
   const a = worldLL((x0s - v.tx) / v.k, (y0s - v.ty) / v.k), b = worldLL((x0s + W - v.tx) / v.k, (y0s + H - v.ty) / v.k);
   const tx0 = Math.floor(lon2tx(a.lon, z)), tx1 = Math.floor(lon2tx(b.lon, z));
   const ty0 = Math.max(0, Math.floor(lat2ty(a.lat, z))), ty1 = Math.min(n - 1, Math.floor(lat2ty(b.lat, z)));
   if ((tx1 - tx0 + 1) * (ty1 - ty0 + 1) > 400) return [];
   if (live) fetchViewport(z, a, b);
-  const out = [];
-  for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
-    const xx = ((tx % n) + n) % n;
-    out.push({ key: `${useGoogle() ? 'g' : 'e'}${z}/${xx}/${ty}`, z, tx, ty, url: TILE_URL(z, xx, ty), ...tileRect(v, z, tx, ty) });
-  }
+  const out = [], pre = S.base + (g ? 'g' : 'e');
+  layers.forEach((L, li) => {
+    for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) {
+      const xx = ((tx % n) + n) % n;
+      out.push({ key: `${pre}${li}:${z}/${xx}/${ty}`, layer: li, google: g, z, tx, ty, url: L(z, xx, ty), ...tileRect(v, z, tx, ty) });
+    }
+  });
   return out;
 }
 function placeTile(el, r) { el.setAttribute('x', r.x - 0.3); el.setAttribute('y', r.y - 0.3); el.setAttribute('width', r.w + 0.6); el.setAttribute('height', r.h + 0.6); }
+const layerG = i => { while (tilesG.children.length <= i) tilesG.appendChild(document.createElementNS(NS, 'g')); return tilesG.children[i]; };
+function renderAttrib() {
+  const on = !!(curBase() && S.origin);
+  $('#attrib').classList.toggle('hidden', !on);
+  if (on) $('#attrib').innerHTML = (useGoogle() ? '<b>Google</b>' : '') + esc(attribText());
+}
 function renderTiles() {
+  if (G.status === 'ok' && curBase() && !G.sessions[S.base] && !G.pending) { // switching to a Google map type we have no session for yet
+    G.pending = true; const b = S.base;
+    ensureSession(b).catch(() => {}).finally(() => { G.pending = false; renderPlan(); });
+  }
   const r = svg.getBoundingClientRect();
   const list = tileList(view, 0, 0, r.width, r.height, true), keep = new Set(list.map(t => t.key));
   // keep older tiles (other zoom levels) underneath until the new ones have loaded, to avoid flashing
   const allLoaded = list.every(t => tileEls.get(t.key) && tileEls.get(t.key)._ok);
+  const pre = list.length ? list[0].key.split(':')[0].slice(0, -1) : '#';
   for (const [k, el] of tileEls) {
     if (keep.has(k)) continue;
-    if (allLoaded || tileEls.size > 500 || !S.sat) { el.remove(); tileEls.delete(k); }
+    if (allLoaded || tileEls.size > 600 || !k.startsWith(pre)) { el.remove(); tileEls.delete(k); }
     else placeTile(el, tileRect(view, el._z, el._tx, el._ty));
   }
   for (const t of list) {
@@ -582,22 +612,17 @@ function renderTiles() {
     if (!el) {
       el = document.createElementNS(NS, 'image'); el._z = t.z; el._tx = t.tx; el._ty = t.ty;
       el.setAttribute('preserveAspectRatio', 'none');
-      const g = t.key[0] === 'g';
+      const g = t.google;
       el.addEventListener('load', () => { el._ok = true; if (g) G.loads++; clearTimeout(renderTiles._t); renderTiles._t = setTimeout(renderTiles, 60); });
       el.addEventListener('error', () => { el._ok = true; if (g && useGoogle() && ++G.errors >= 6 && !G.loads) googleTileFailed(); });
-      el.setAttribute('href', t.url); tilesG.appendChild(el); tileEls.set(t.key, el);
+      el.setAttribute('href', t.url); layerG(t.layer).appendChild(el); tileEls.set(t.key, el);
     }
     placeTile(el, t);
   }
-  const on = S.sat && !!S.origin;
-  $('#stage').classList.toggle('sat', on);
-  $('#attrib').classList.toggle('hidden', !on);
-  if (on && !useGoogle()) $('#attrib').textContent = ESRI_ATTR;
-  else if (on && useGoogle() && !$('#attrib').querySelector('b')) $('#attrib').innerHTML = '<b>Google</b>' + esc(attribText());
-  $('#satBtn').classList.toggle('on', S.sat);
-  $('#satBtn').disabled = !S.origin;
+  $('#stage').classList.toggle('sat', !!(curBase() && S.origin));
+  renderAttrib();
 }
-$('#satBtn').onclick = () => { S.sat = !S.sat; renderPlan(); save(); };
+$('#baseSel').onchange = e => setBase(e.target.value);
 
 /* ---------- drawing ---------- */
 function pinSVG(p, n, sx, sy, sel, s = 1) {
@@ -845,7 +870,7 @@ async function drawTiles(ctx, tl) { // returns true if any imagery was drawn
   tl.forEach((t, i) => { if (imgs[i]) ctx.drawImage(imgs[i], t.x - 0.3, t.y - 0.3, t.w + 0.6, t.h + 0.6); });
   return imgs.some(Boolean);
 }
-const attribLine = () => useGoogle() ? 'Google · ' + attribText() : ESRI_ATTR;
+const attribLine = () => (useGoogle() ? 'Google · ' : '') + attribText();
 async function exportPNG() {
   busy('Drawing plan…');
   try {
@@ -1073,14 +1098,14 @@ $('#menu').addEventListener('click', async e => {
   if (a === 'open') $('#projFile').click();
   if (a === 'bg') $('#bgFile').click();
   if (a === 'bgremove') { S.bg = null; if (mode === 'bg') mode = 'view'; render(); save(); }
-  if (a === 'new') { if (await ask('Clear all photos and start a new plan? Save a project file first if you want to keep this one.', 'Start new')) { S.photos = []; S.origin = null; S.bg = null; S.sat = true; S.title = 'Site Photo Location Plan'; $('#title').value = S.title; selectedId = null; mode = 'view'; view = { k: 4, tx: 300, ty: 300 }; render(); save(); } }
+  if (a === 'new') { if (await ask('Clear all photos and start a new plan? Save a project file first if you want to keep this one.', 'Start new')) { S.photos = []; S.origin = null; S.bg = null; S.base = 'satellite'; $('#baseSel').value = S.base; S.title = 'Site Photo Location Plan'; $('#title').value = S.title; selectedId = null; mode = 'view'; view = { k: 4, tx: 300, ty: 300 }; render(); save(); } }
 });
 $('#projFile').onchange = async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
   try { const d = JSON.parse(await f.text()); if (!Array.isArray(d.photos)) throw 0; loadState(d); fitView(); render(); save(); toast(`Opened ${d.photos.length} photos`); }
   catch (_) { toast('That isn’t a photo plan project file.'); }
 };
-function loadState(d) { S.title = d.title || 'Site Photo Location Plan'; S.origin = d.origin || null; S.bg = d.bg || null; S.photos = d.photos || []; S.sat = d.sat !== false; $('#title').value = S.title; }
+function loadState(d) { S.title = d.title || 'Site Photo Location Plan'; S.origin = d.origin || null; S.bg = d.bg || null; S.photos = d.photos || []; S.base = BASES[d.base] !== undefined ? d.base : (d.sat === false ? 'none' : 'satellite'); $('#baseSel').value = S.base; $('#title').value = S.title; }
 $('#title').addEventListener('input', e => { S.title = e.target.value; save(); });
 
 /* ---------- file inputs / drop ---------- */
@@ -1123,15 +1148,15 @@ $('#gkeyCancel').onclick = () => $('#gdlg').classList.add('hidden');
 $('#gkeySave').onclick = async () => {
   const k = $('#gkeyInput').value.trim(); if (!k) return;
   $('#gkeyMsg').style.color = ''; $('#gkeyMsg').textContent = 'Testing…';
-  lsSet('gSession', '');
+  Object.keys(BASES).forEach(b => lsSet('gSess_' + b, ''));
   const r = await startGoogle(k);
   $('#gkeyMsg').style.color = r.ok ? '#2f7d5b' : '#b4321a'; $('#gkeyMsg').textContent = r.msg;
-  if (r.ok) { lsSet('gmapsKey', k); if (!S.sat) { S.sat = true; renderPlan(); } setTimeout(() => $('#gdlg').classList.add('hidden'), 900); }
+  if (r.ok) { lsSet('gmapsKey', k); if (!curBase()) setBase('satellite'); setTimeout(() => $('#gdlg').classList.add('hidden'), 900); }
 };
 $('#gkeyRemove').onclick = async () => {
-  lsSet('gmapsKey', ''); lsSet('gSession', ''); $('#gkeyInput').value = '';
+  lsSet('gmapsKey', ''); Object.keys(BASES).forEach(b => lsSet('gSess_' + b, '')); $('#gkeyInput').value = '';
   const r = await startGoogle(GOOGLE_MAPS_API_KEY);
-  $('#gkeyMsg').style.color = ''; $('#gkeyMsg').textContent = GOOGLE_MAPS_API_KEY ? 'Removed. Using the site’s built-in key.' : 'Removed. Using Esri imagery.';
+  $('#gkeyMsg').style.color = ''; $('#gkeyMsg').textContent = GOOGLE_MAPS_API_KEY ? 'Removed. Using the site’s built-in key.' : 'Removed. Using Esri maps.';
 };
 
 /* ---------- boot ---------- */

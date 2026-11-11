@@ -10,7 +10,7 @@ Click a pin to open the photo and its caption.
 - Reads GPS position, compass heading and time taken from photo EXIF data (in the browser, nothing is uploaded)
 - Numbered pins ordered by time taken, with editable captions
 - Place pins or set direction by hand for photos missing that data; drag pins to correct GPS drift
-- Satellite imagery behind the pins by default, with a toggle to turn it off. Uses Google satellite imagery when a Google Maps Platform key is set, otherwise Esri World Imagery
+- Base map picker: Satellite (default), Satellite + streets, Street map, or None. Uses Google maps when a Google Maps Platform key works, otherwise the Esri equivalents
 - Optional site plan drawing overlay, aligned by drag, resize and rotate
 - Google Earth: per-photo "Open in Google Earth" link, and a KMZ export with direction icons and photos in each pin's popup
 - Exports: PNG plan with legend, interactive HTML report, Google Earth KMZ, and a JSON project file

@@ -95,9 +95,15 @@ aside{width:330px;flex:none;border-left:1px solid var(--line);background:var(--p
 .sidehead h3{margin:0;font-size:14px;letter-spacing:.04em;text-transform:uppercase}
 .sidehead span{color:var(--muted);font:500 12px var(--mono)}
 #list{list-style:none;margin:0;padding:6px;overflow:auto;flex:1}
-.item{display:flex;gap:10px;padding:8px;border-radius:9px;cursor:pointer;align-items:flex-start}
+.row{position:relative;border-radius:9px;overflow:hidden;margin-bottom:2px}
+.row .del{position:absolute;inset:0;background:#c8381c;color:#fff;display:flex;align-items:center;justify-content:flex-end;padding-right:18px;font-weight:600;font-size:14px;gap:6px}
+.item{position:relative;display:flex;gap:10px;padding:8px;border-radius:9px;cursor:pointer;align-items:flex-start;background:var(--panel);touch-action:pan-y;user-select:none;-webkit-user-select:none}
+.item.anim{transition:transform .22s ease}
+.row.gone{transition:height .2s ease,margin .2s ease;height:0!important;margin:0}
 .item:hover{background:#f6f3ec}
-.item.sel{background:var(--accent-soft)}
+.item.sel{background:#fbe8df}
+.item img{-webkit-user-drag:none;pointer-events:none}
+.toast button{margin-left:12px;border:0;background:rgba(255,255,255,.18);color:#fff;border-radius:6px;padding:4px 10px;cursor:pointer;font-weight:600}
 .item .n{flex:none;width:26px;height:26px;border-radius:50%;background:var(--ink);color:#fff;font:600 12px var(--mono);display:flex;align-items:center;justify-content:center;margin-top:2px}
 .item.sel .n{background:var(--accent)}
 .item.unplaced .n{background:#fff;color:var(--ink);border:1.5px dashed var(--muted)}
@@ -239,7 +245,7 @@ a.btn{text-decoration:none}
     <aside>
       <div class="sidehead"><h3>Photos</h3><span id="count">0</span></div>
       <ol id="list"></ol>
-      <div class="tip" id="tip">Pins come from each photo's GPS. Direction comes from the compass heading (most iPhones record it, many Android phones don't). If a photo has no location or direction, you can place it or set its direction by hand.</div>
+      <div class="tip" id="tip">Pins come from each photo's GPS. Direction comes from the compass heading (most iPhones record it, many Android phones don't). Swipe a photo left to delete it. If a photo has no location or direction, you can place it or set its direction by hand.</div>
     </aside>
   </main>
 </div>
@@ -311,6 +317,20 @@ const headTxt = p => p.heading == null ? '' : `${dir16(p.heading)} ${Math.round(
 const metaLine = p => [fmtDate(p.time), p.heading != null ? 'Facing ' + headTxt(p) : null].filter(Boolean).join(' · ');
 const slug = () => (S.title || 'photo-plan').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'photo-plan';
 
+function toastAction(msg, label, fn, ms = 6000) {
+  document.querySelectorAll('.toast').forEach(t => t.remove());
+  const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg;
+  const b = document.createElement('button'); b.textContent = label; b.onclick = () => { t.remove(); fn(); };
+  t.appendChild(b); document.body.appendChild(t); setTimeout(() => t.remove(), ms);
+}
+function deleteWithUndo(id) {
+  const i = S.photos.findIndex(p => p.id === id); if (i < 0) return;
+  const [p] = S.photos.splice(i, 1);
+  if (selectedId === id) selectedId = null;
+  if (openId === id) closeModal();
+  render(); save();
+  toastAction(`Deleted photo ${i + 1}`, 'Undo', () => { S.photos.splice(Math.min(i, S.photos.length), 0, p); render(); save(); });
+}
 function toast(msg, ms = 3200) {
   const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg;
   document.body.appendChild(t); setTimeout(() => t.remove(), ms);
@@ -661,10 +681,10 @@ function renderList() {
     if (p.wx == null) flags.push(`<button data-place="${p.id}">Place on plan</button>`);
     if (p.heading == null) flags.push(`<span class="flag">No direction</span>`);
     if (p.manual && p.lat == null && p.wx != null) flags.push(`<span class="flag">Placed by hand</span>`);
-    return `<li class="item${p.id === selectedId ? ' sel' : ''}${p.wx == null ? ' unplaced' : ''}" data-id="${p.id}">
+    return `<li class="row"><div class="del" aria-hidden="true">Delete</div><div class="item${p.id === selectedId ? ' sel' : ''}${p.wx == null ? ' unplaced' : ''}" data-id="${p.id}">
       <span class="n">${i + 1}</span><img src="${p.thumb}" alt="">
       <div class="txt"><div class="cap${cap ? '' : ' auto'}">${esc(cap || autoCaption(p))}</div>
-      <div class="meta">${esc(metaLine(p))}</div>${flags.length ? `<div class="flags">${flags.join('')}</div>` : ''}</div></li>`;
+      <div class="meta">${esc(metaLine(p))}</div>${flags.length ? `<div class="flags">${flags.join('')}</div>` : ''}</div></div></li>`;
   }).join('');
 }
 function renderChrome() {
@@ -764,7 +784,41 @@ function placeAt(pt) {
 $('#bannerX').onclick = () => { placingId = null; renderChrome(); };
 
 /* ---------- list ---------- */
+// Swipe a list row left to delete it
+let sw = null, swipeEnded = 0;
+$('#list').addEventListener('pointerdown', e => {
+  const it = e.target.closest('.item'); if (!it || e.button > 0 || e.target.closest('button')) return;
+  sw = { it, id: it.dataset.id, x: e.clientX, y: e.clientY, t: performance.now(), dx: 0, on: false, pid: e.pointerId };
+});
+$('#list').addEventListener('pointermove', e => {
+  if (!sw || e.pointerId !== sw.pid) return;
+  const dx = e.clientX - sw.x, dy = e.clientY - sw.y;
+  if (!sw.on) {
+    if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { sw = null; return; } // vertical scroll
+    if (dx < -10 && Math.abs(dx) > Math.abs(dy) * 1.4) { sw.on = true; sw.it.classList.remove('anim'); try { sw.it.setPointerCapture(e.pointerId); } catch (_) {} }
+    else return;
+  }
+  sw.dx = Math.min(0, dx);
+  sw.it.style.transform = `translateX(${sw.dx}px)`;
+  e.preventDefault();
+});
+function endSwipe(e) {
+  if (!sw || e.pointerId !== sw.pid) return;
+  const s0 = sw; sw = null;
+  if (!s0.on) return;
+  swipeEnded = performance.now();
+  const w = s0.it.offsetWidth, fast = -s0.dx / Math.max(1, performance.now() - s0.t) > 0.6 && s0.dx < -50;
+  s0.it.classList.add('anim');
+  if (e.type !== 'pointercancel' && (-s0.dx > w * 0.38 || fast)) {
+    s0.it.style.transform = `translateX(${-w - 20}px)`;
+    const row = s0.it.parentElement; row.style.height = row.offsetHeight + 'px';
+    setTimeout(() => { row.classList.add('gone'); setTimeout(() => deleteWithUndo(s0.id), 200); }, 180);
+  } else s0.it.style.transform = '';
+}
+$('#list').addEventListener('pointerup', endSwipe);
+$('#list').addEventListener('pointercancel', endSwipe);
 $('#list').addEventListener('click', e => {
+  if (performance.now() - swipeEnded < 350) { e.stopPropagation(); return; }
   const pb = e.target.closest('[data-place]');
   if (pb) { e.stopPropagation(); startPlacing(pb.dataset.place); return; }
   const li = e.target.closest('.item'); if (!li) return;
